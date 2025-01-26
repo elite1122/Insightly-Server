@@ -87,28 +87,28 @@ async function run() {
         app.get("/articles", async (req, res) => {
             try {
                 const { search, publisher, tags, status } = req.query;
-                let query = {};  
-        
+                let query = {};
+
                 // If status is "approved", filter only approved articles
                 if (status === "approved") {
                     query.isApproved = true;
                 }
-        
+
                 // Search by title (case-insensitive)
                 if (search) {
                     query.title = { $regex: search, $options: "i" };
                 }
-        
+
                 // Filter by publisher
                 if (publisher) {
                     query.publisher = publisher;
                 }
-        
-                // Filter by tags (tags should be an array)
+
+                // Filter by tags (handle as an array)
                 if (tags) {
                     query.tags = { $in: tags.split(",") };
                 }
-        
+
                 const articles = await articleCollection.find(query).toArray();
                 res.send(articles);
             } catch (error) {
@@ -125,26 +125,26 @@ async function run() {
             res.send(result);
         });
 
-        // Approve an article
         app.patch("/articles/approve/:id", async (req, res) => {
             const id = req.params.id;
             const result = await articleCollection.updateOne(
                 { _id: new ObjectId(id) },
-                { $set: { isApproved: true } }
+                { $set: { isApproved: true, declineReason: null } }
             );
             res.send(result);
         });
-
-        // Decline an article with reason
+        
         app.patch("/articles/decline/:id", async (req, res) => {
             const id = req.params.id;
             const { reason } = req.body;
             const result = await articleCollection.updateOne(
                 { _id: new ObjectId(id) },
-                { $set: { isApproved: false, declineReason: reason } }
+                { $set: { isApproved: false, isDeclined: true, declineReason: reason } }
             );
             res.send(result);
         });
+        
+        
 
         // Delete an article
         app.delete("/articles/:id", async (req, res) => {
