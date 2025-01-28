@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const app = express();
+const cron = require("node-cron");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
@@ -19,13 +21,13 @@ const client = new MongoClient(uri, {
     }
 });
 
+const userCollection = client.db("insightlyDB").collection("users");
+const articleCollection = client.db("insightlyDB").collection("articles");
+const publisherCollection = client.db("insightlyDB").collection("publishers");
+
 async function run() {
     try {
-        await client.connect();
-
-        const userCollection = client.db("insightlyDB").collection("users");
-        const articleCollection = client.db("insightlyDB").collection("articles");
-        const publisherCollection = client.db("insightlyDB").collection("publishers");
+        // await client.connect();
 
         // Users related API
         app.get('/users', async (req, res) => {
@@ -48,18 +50,19 @@ async function run() {
             }
         });
 
-         // Update subscription or user details using _id
-         app.patch('/users/:id', async (req, res) => {
+        // Update subscription or user details using _id
+        app.patch('/users/:id', async (req, res) => {
             const id = req.params.id;
-            const { premiumTaken, name, photo } = req.body;
+            const { premiumTaken, name, photo, role } = req.body;
 
             try {
                 const filter = { _id: new ObjectId(id) };
                 const updateFields = {};
-                
+
                 if (premiumTaken) updateFields.premiumTaken = new Date(premiumTaken);
                 if (name) updateFields.name = name;
                 if (photo) updateFields.photo = photo;
+                if (role) updateFields.role = role;
 
                 const result = await userCollection.updateOne(filter, { $set: updateFields });
                 if (result.matchedCount === 0) {
@@ -84,10 +87,30 @@ async function run() {
 
                 const currentDate = new Date();
                 const isPremium = user.premiumTaken && new Date(user.premiumTaken) > currentDate;
-                res.send({ isPremium, premiumTaken: user.premiumTaken });
+                res.send({ isPremium, premiumTaken: user.premiumTaken, role: user.role });
             } catch (error) {
                 console.error(error);
                 res.status(500).send({ message: "Failed to check subscription" });
+            }
+        });
+
+
+        app.post("/create-payment-intent", async (req, res) => {
+            const { amount } = req.body;
+
+            try {
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount, // Amount in cents
+                    currency: "usd", // Change to your desired currency
+                    payment_method_types: ["card"],
+                });
+
+                res.send({
+                    clientSecret: paymentIntent.client_secret,
+                });
+            } catch (error) {
+                console.error("Error creating payment intent:", error);
+                res.status(500).send({ error: "Failed to create payment intent" });
             }
         });
 
@@ -134,7 +157,7 @@ async function run() {
         // Get all approved articles with search and filter functionality
         app.get("/articles", async (req, res) => {
             try {
-                const { search, publisher, tags, status, userEmail } = req.query;
+                const { search, publisher, tags, status, email } = req.query;
                 let query = {};
 
                 if (status === "approved") {
@@ -158,8 +181,8 @@ async function run() {
                     query.tags = { $in: tags.split(",") };
                 }
 
-                if (userEmail) {
-                    query.authorEmail = userEmail;
+                if (email) {
+                    query.authorEmail = email;
                 }
 
                 const articles = await articleCollection.find(query).toArray();
@@ -199,12 +222,37 @@ async function run() {
             res.send(article);
         });
 
-        // Add an article
+        // Add an article with user restriction logic
         app.post("/articles", async (req, res) => {
-            const article = req.body;
-            const result = await articleCollection.insertOne(article);
-            res.send(result);
+            const { authorEmail, ...articleData } = req.body;
+
+            try {
+                // Fetch user details
+                const user = await userCollection.findOne({ email: authorEmail });
+                if (!user) {
+                    return res.status(404).send({ message: "User not found" });
+                }
+
+                // Check if user is not premium and already has an article
+                if (user.role !== "premium") {
+                    const existingArticles = await articleCollection.countDocuments({ authorEmail });
+                    if (existingArticles >= 1) {
+                        return res.status(403).send({
+                            message: "Normal users can only publish one article. Upgrade to premium to post more."
+                        });
+                    }
+                }
+
+                // Insert article into the collection
+                const result = await articleCollection.insertOne({ authorEmail, ...articleData });
+                res.send({ message: "Article published successfully", articleId: result.insertedId });
+            } catch (error) {
+                console.error("Error adding article:", error);
+                res.status(500).send({ message: "Internal Server Error" });
+            }
         });
+
+
 
         app.patch("/articles/approve/:id", async (req, res) => {
             const id = req.params.id;
@@ -297,6 +345,40 @@ async function run() {
         // Ensure client will close when finished
     }
 }
+
+async function checkSubscriptions() {
+    try {
+        const currentDate = new Date();
+
+        // Find users whose subscription has expired
+        const expiredUsers = await userCollection.find({
+            premiumTaken: { $lte: currentDate }, // Check if premiumTaken is less than or equal to current date
+        }).toArray();
+
+        if (expiredUsers.length > 0) {
+            const expiredUserIds = expiredUsers.map(user => user._id);
+
+            // Update role to 'user' and set premiumTaken to null for expired users
+            const result = await userCollection.updateMany(
+                { _id: { $in: expiredUserIds } },
+                { $set: { role: "user", premiumTaken: null } }
+            );
+
+            console.log(`Updated ${result.modifiedCount} users to role "user".`);
+        } else {
+            // console.log("No expired subscriptions found.");
+        }
+    } catch (error) {
+        console.error("Error checking subscriptions:", error);
+    }
+}
+
+// Schedule the task to run every hour
+cron.schedule("* * * * *", () => {
+    // console.log("Checking for expired subscriptions...");
+    checkSubscriptions();
+});
+
 run().catch(console.dir);
 
 app.get('/', (req, res) => {
