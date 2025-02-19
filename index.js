@@ -86,6 +86,39 @@ async function run() {
             }
         });
 
+        // Update user profile endpoint
+        app.patch("/users/:email", async (req, res) => {
+            const email = req.params.email;
+            const { name, photo, phone, address } = req.body;
+
+            try {
+                const filter = { email };
+                const updateDoc = {
+                    $set: {
+                        ...(name && { name }),
+                        ...(photo && { photo }),
+                        ...(phone && { phone }),
+                        ...(address && { address }),
+                    },
+                };
+
+                const result = await userCollection.updateOne(filter, updateDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: "User not found" });
+                }
+
+                if (result.modifiedCount === 1) {
+                    res.status(200).json({ message: "Profile updated successfully" });
+                } else {
+                    res.status(200).json({ message: "No changes made to the profile" });
+                }
+            } catch (error) {
+                console.error("Profile update error:", error);
+                res.status(500).json({ message: "Internal server error" });
+            }
+        });
+
         // Update subscription or user details using _id
         app.patch('/users/:id', async (req, res) => {
             const id = req.params.id;
