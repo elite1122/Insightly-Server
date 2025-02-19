@@ -92,19 +92,31 @@ async function run() {
             const { name, photo, phone, address } = req.body;
 
             try {
-                console.log("Attempting profile update for:", email);
+                const filter = { email };
+                const updateDoc = {
+                    $set: {
+                        ...(name && { name }),
+                        ...(photo && { photo }),
+                        ...(phone && { phone }),
+                        ...(address && { address }),
+                    },
+                };
+
                 const result = await userCollection.updateOne(filter, updateDoc);
-                console.log("Update Result:", result);
 
                 if (result.matchedCount === 0) {
                     return res.status(404).json({ message: "User not found" });
                 }
-                res.status(200).json({ message: result.modifiedCount ? "Profile updated successfully" : "No changes made to the profile" });
+
+                if (result.modifiedCount === 1) {
+                    res.status(200).json({ message: "Profile updated successfully" });
+                } else {
+                    res.status(200).json({ message: "No changes made to the profile" });
+                }
             } catch (error) {
-                console.error("Profile update error:", error.message, error.stack);
+                console.error("Profile update error:", error);
                 res.status(500).json({ message: "Internal server error" });
             }
-
         });
 
         // Update subscription or user details using _id
